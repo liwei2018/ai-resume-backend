@@ -1,0 +1,60 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// 候选人核心表
+model Candidate {
+  id          String           @id @default(uuid())
+  name        String?
+  phone       String?
+  email       String?
+  city        String?
+  status      String           @default("pending") // pending, passed, interviewing, hired, rejected
+  resumeUrl   String
+  skills      String[]         // PostgreSQL 原生支持字符串数组，存标签极快
+  createdAt   DateTime         @default(now())
+  
+  // 级联关系：删除候选人时自动删除其关联的数据
+  experiences WorkExperience[]
+  educations  Education[]
+  scores      MatchScore[]
+}
+
+// 工作经历表
+model WorkExperience {
+  id          String    @id @default(uuid())
+  candidateId String
+  company     String
+  position    String
+  timeRange   String
+  summary     String
+  candidate   Candidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+}
+
+// 教育背景表
+model Education {
+  id          String    @id @default(uuid())
+  candidateId String
+  school      String
+  major       String
+  degree      String
+  graduationTime String
+  candidate   Candidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+}
+
+// 智能评分表
+model MatchScore {
+  id          String    @id @default(uuid())
+  candidateId String
+  totalScore  Int
+  skillScore  Int
+  expScore    Int
+  eduScore    Int
+  aiComment   String
+  candidate   Candidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+}

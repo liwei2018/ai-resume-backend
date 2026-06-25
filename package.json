@@ -1,0 +1,24 @@
+{
+  "name": "ai-resume-backend",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@prisma/client": "^5.22.0",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "multer": "^2.2.0",
+    "openai": "^6.44.0",
+    "pdf-parse": "^1.1.1"
+  },
+  "devDependencies": {
+    "prisma": "^5.22.0"
+  },
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  }
+}
