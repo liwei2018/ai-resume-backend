@@ -16,7 +16,7 @@ app.use(cors());                 // 允许 Next.js 前端跨域联调
 app.use(express.json());         // 解析前端 httpClient 发来的 JSON 载荷
 
 // 静态资源托管：让前端能够通过 http://localhost:8000/uploads/xxx.pdf 预览和下载简历
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use('/uploads', express.static(path.join('D:\\work\\ai-resume-platform', 'public', 'uploads')));
 
 // 路由挂载
 app.use('/api', resumeRoutes);

@@ -4,11 +4,9 @@ import resumeController from '../controllers/resumeController.js';
 
 const router = express.Router();
 
-// 配置 Multer 临时存储（极限开发建议存在本地，线上则对接 OSS/S3）
 const upload = multer({ 
-  dest: 'uploads/',
+  storage: multer.memoryStorage(),
   fileFilter: (req, file, cb) => {
-    // 严格限制只能上传 PDF
     if (file.mimetype === 'application/pdf') {
       cb(null, true);
     } else {
@@ -26,11 +24,12 @@ router.get('/extract/stream', resumeController.streamExtract);
 // 模块三：岗位智能匹配打分
 router.post('/match', resumeController.matchJob);
 
-// 模块三：SSE 流式岗位匹配
 router.post('/match/stream', resumeController.matchJobStream);
 
 // 模块四：候选人看盘列表及状态流转
 router.get('/candidates', resumeController.getCandidates);
+router.get('/candidates/:id', resumeController.getCandidateById);
 router.patch('/candidates/:id/status', resumeController.updateStatus);
+router.delete('/candidates/:id', resumeController.deleteCandidate);
 
 export default router;

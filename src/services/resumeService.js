@@ -74,22 +74,20 @@ class ResumeService {
    * 从本地路径读取 PDF 文件内容并解析文本
    */
   async _downloadAndExtractText(fileUrl) {
-    // 从 URL 中提取文件名
     const filename = fileUrl.split('/').pop();
-    const filepath = path.join(process.cwd(), 'uploads', filename);
+    const filepath = path.join('D:\\work\\ai-resume-platform', 'public', 'uploads', filename);
     
     if (!fs.existsSync(filepath)) {
       throw new Error('文件不存在: ' + filename);
     }
 
-    // 读取并解析 PDF 文件
     const dataBuffer = fs.readFileSync(filepath);
     const pdfData = await pdfParse(dataBuffer);
     
     return {
       filename,
       filepath,
-      text: pdfData.text || '' // 返回解析后的文本内容
+      text: pdfData.text || ''
     };
   }
 
@@ -98,6 +96,10 @@ class ResumeService {
    */
   async callAIStream(systemPrompt, userPrompt, res, onChunk) {
     try {
+      console.log('=== [callAIStream] 开始调用大模型 ===');
+      console.log('System prompt 长度:', systemPrompt.length);
+      console.log('User prompt 长度:', userPrompt.length);
+      
       const stream = await openai.chat.completions.create({
         model: defaultModel,
         messages: [
@@ -109,17 +111,34 @@ class ResumeService {
       });
 
       let fullContent = '';
+      let chunkCount = 0;
+      let lastLogTime = Date.now();
 
+      console.log('=== [callAIStream] 开始接收流式数据 ===');
+      
       for await (const chunk of stream) {
         const content = chunk.choices[0]?.delta?.content || '';
         if (content) {
+          chunkCount++;
           fullContent += content;
+          
+          // 每 10 个 chunk 或超过 500ms 打一次日志
+          const now = Date.now();
+          if (chunkCount % 10 === 0 || (now - lastLogTime) > 500) {
+            console.log(`[chunk #${chunkCount}] 累计长度: ${fullContent.length}, 最新内容: "${content.substring(0, 50)}..."`);
+            lastLogTime = now;
+          }
+          
           if (onChunk) {
             onChunk(content);
           }
         }
       }
 
+      console.log(`=== [callAIStream] 流式接收完成，共 ${chunkCount} 个 chunks ===`);
+      console.log('最终内容长度:', fullContent.length);
+      console.log('最终内容预览:', fullContent.substring(0, 200) + '...');
+      
       return fullContent;
     } catch (error) {
       console.error('流式调用失败:', error);
@@ -128,94 +147,180 @@ class ResumeService {
   }
 
   /**
-   * 模块二：SSE 流式解析简历并持久化存储
+   * 单个字段解析（流式）
+   */
+  async extractSingleField(resumeText, fieldKey) {
+    const fieldPrompts = {
+      name: {
+        prompt: '从简历中提取姓名。只返回姓名，不要其他内容。',
+        example: '张三'
+      },
+      phone: {
+        prompt: '从简历中提取手机号码。只返回号码，不要其他内容。如果没有找到，返回"未找到"。',
+        example: '13800138000'
+      },
+      email: {
+        prompt: '从简历中提取电子邮箱。只返回邮箱地址，不要其他内容。如果没有找到，返回"未找到"。',
+        example: 'zhangsan@example.com'
+      },
+      city: {
+        prompt: '从简历中提取所在城市。只返回城市名，不要其他内容。如果没有找到，返回"未找到"。',
+        example: '北京'
+      },
+      skills: {
+        prompt: '从简历中提取技能列表。只返回一个JSON数组格式，如["JavaScript","React","Node.js"]。如果没有找到技能，返回空数组[]。',
+        example: '["JavaScript", "React", "Node.js"]'
+      },
+      education: {
+        prompt: '从简历中提取教育背景。只返回一个JSON数组格式，每个元素包含school(学校)、major(专业)、degree(学位)、graduationTime(毕业时间)。如果没有找到，返回空数组[]。',
+        example: '[{"school":"北京大学","major":"计算机科学与技术","degree":"本科","graduationTime":"2020年"}]'
+      },
+      experience: {
+        prompt: '从简历中提取工作经历。只返回一个JSON数组格式，每个元素包含company(公司)、position(职位)、timeRange(时间范围)、summary(工作描述)。如果没有找到，返回空数组[]。',
+        example: '[{"company":"字节跳动","position":"前端工程师","timeRange":"2020-2023","summary":"负责公司核心产品的前端开发"}]'
+      },
+      projects: {
+        prompt: '从简历中提取项目经验。只返回一个JSON数组格式，每个元素包含name(项目名)、techStack(技术栈数组)、responsibility(职责)、highlights(项目亮点)。如果没有找到，返回空数组[]。',
+        example: '[{"name":"电商平台","techStack":["React","Node.js"],"responsibility":"核心模块开发","highlights":"性能提升50%"}]'
+      }
+    };
+
+    const config = fieldPrompts[fieldKey];
+    if (!config) {
+      throw new Error(`未知的字段: ${fieldKey}`);
+    }
+
+    console.log(`  → 调用 AI 解析: ${fieldKey}`);
+    
+    const fullContent = await this.callAIStream(
+      config.prompt + `\n\n简历内容：\n${resumeText.substring(0, 3000)}`,
+      '',
+      null,
+      null
+    );
+
+    console.log(`  → AI 返回: ${fullContent.substring(0, 100)}...`);
+
+    // 解析返回结果
+    try {
+      // 尝试直接解析 JSON
+      const data = JSON.parse(fullContent.trim());
+      return data;
+    } catch {
+      // 如果不是 JSON，尝试提取 JSON
+      const jsonMatch = fullContent.match(/(\[[\s\S]*\]|\{[\s\S]*\})/);
+      if (jsonMatch) {
+        return JSON.parse(jsonMatch[0]);
+      }
+      // 如果都不是，返回原文本
+      return fullContent.trim();
+    }
+  }
+
+  /**
+   * 模块二：SSE 流式解析简历并持久化存储（分字段逐步调用）
    */
   async getExtractionStream(fileUrl, res) {
     try {
-      console.log('开始解析简历:', fileUrl);
+      console.log('\n========== [开始简历解析流程 - 分字段逐步调用] ==========');
+      console.log('文件路径:', fileUrl);
       
       // 1. 提取 PDF 文本
+      console.log('[阶段 1/4] 提取 PDF 文本...');
       const fileInfo = await this._downloadAndExtractText(fileUrl);
-      console.log('PDF 文本提取成功, 长度:', fileInfo.text.length);
+      console.log('[阶段 1/4] PDF 文本提取成功, 长度:', fileInfo.text.length);
 
       if (!fileInfo.text || fileInfo.text.length < 10) {
         throw new Error('PDF 文本内容为空或过短，无法解析');
       }
 
-      // 2. 调用大模型进行解析
-      let parsedData;
-      
-      if (hasValidApiKey) {
-        // 使用真实大模型
-        console.log('开始调用大模型:', defaultModel);
-        
-        // 发送开始信号
-        res.write(`data: ${JSON.stringify({ type: 'start', message: '开始解析简历...' })}\n\n`);
+      // 发送开始信号
+      res.write(`data: ${JSON.stringify({ type: 'start', message: '开始解析简历...' })}\n\n`);
 
-        const systemPrompt = `你是一位专业的简历解析助手。请从简历中提取信息并以 JSON 格式返回。
-必须返回有效的 JSON，不要包含任何 markdown 标记。
-返回格式：{"name":"姓名","phone":"电话","email":"邮箱","city":"城市","skills":["技能1"],"education":[{"school":"学校","major":"专业","degree":"学位","graduationTime":"毕业时间"}],"experience":[{"company":"公司","position":"职位","timeRange":"时间","summary":"描述"}],"projects":[{"name":"项目名","techStack":["技术栈"],"responsibility":"职责","highlights":"亮点"}]}`;
+      // 2. 分字段逐步调用 AI
+      const fields = [
+        { key: 'name', label: '姓名', weight: 5 },
+        { key: 'phone', label: '电话', weight: 5 },
+        { key: 'email', label: '邮箱', weight: 5 },
+        { key: 'city', label: '城市', weight: 5 },
+        { key: 'skills', label: '技能', weight: 15 },
+        { key: 'education', label: '教育背景', weight: 20 },
+        { key: 'experience', label: '工作履历', weight: 30 },
+        { key: 'projects', label: '项目经验', weight: 15 }
+      ];
 
-        try {
-          // 使用流式调用
-          const fullContent = await this.callAIStream(
-            systemPrompt,
-            `请解析以下简历内容：\n\n${fileInfo.text.substring(0, 3000)}`, // 限制输入长度
-            res,
-            (chunk) => {
-              // 实时发送解析进度
-              res.write(`data: ${JSON.stringify({ type: 'parsing', progress: chunk })}\n\n`);
-            }
-          );
+      const totalWeight = fields.reduce((sum, f) => sum + f.weight, 0);
+      let parsedData = {};
+      let currentProgress = 5;
 
-          // 发送接收完成信号
-          res.write(`data: ${JSON.stringify({ type: 'received', length: fullContent.length })}\n\n`);
+      console.log(`[阶段 2/4] 开始分字段逐步调用 AI，共 ${fields.length} 个字段...`);
 
-          console.log('AI 返回内容长度:', fullContent.length);
-          
-          if (!fullContent || fullContent.trim().length === 0) {
-            throw new Error('大模型返回内容为空');
-          }
-          
-          try {
-            // 尝试提取 JSON
-            const jsonMatch = fullContent.match(/\{[\s\S]*\}/);
-            if (jsonMatch) {
-              parsedData = JSON.parse(jsonMatch[0]);
-              console.log('JSON 解析成功');
-            } else {
-              throw new Error('无法从返回内容中提取 JSON');
-            }
-          } catch (e) {
-            console.error('JSON 解析失败:', e);
-            console.error('原始内容:', fullContent);
-            throw new Error('AI 返回的内容不是有效的 JSON 格式');
-          }
-        } catch (apiError) {
-          console.error('大模型调用失败:', apiError);
-          res.write(`data: ${JSON.stringify({ type: 'fallback', message: '大模型调用失败，使用模拟数据' })}\n\n`);
-          parsedData = generateMockResumeData(fileInfo.text);
-        }
-      } else {
-        // 使用模拟数据
-        console.log('使用模拟模式解析简历');
-        res.write(`data: ${JSON.stringify({ type: 'start', message: '使用模拟模式解析...' })}\n\n`);
-        await new Promise(resolve => setTimeout(resolve, 500)); // 模拟延迟
-        parsedData = generateMockResumeData(fileInfo.text);
-      }
-
-      // 3. 发送解析结果
-      const fields = ['name', 'phone', 'email', 'city', 'skills', 'education', 'experience', 'projects'];
-      
       for (let i = 0; i < fields.length; i++) {
         const field = fields[i];
-        if (parsedData[field]) {
-          res.write(`data: ${JSON.stringify({ type: 'field', field, data: parsedData[field] })}\n\n`);
-          await new Promise(resolve => setTimeout(resolve, 50)); // 小延迟
+        const fieldProgress = Math.round((field.weight / totalWeight) * 90); // 分配进度
+        const fieldStartProgress = currentProgress;
+        const fieldEndProgress = Math.min(currentProgress + fieldProgress, 95);
+
+        console.log(`\n[字段 #${i+1}/${fields.length}] ${field.label}`);
+        console.log(`  进度: ${fieldStartProgress}% → ${fieldEndProgress}%`);
+
+        // 发送开始解析字段事件
+        res.write(`data: ${JSON.stringify({ 
+          type: 'parsing_field', 
+          field: field.key, 
+          label: field.label, 
+          progress: fieldStartProgress 
+        })}\n\n`);
+
+        try {
+          let fieldData;
+          
+          if (hasValidApiKey) {
+            // 调用 AI 解析单个字段
+            fieldData = await this.extractSingleField(fileInfo.text, field.key);
+          } else {
+            // 模拟模式
+            await new Promise(resolve => setTimeout(resolve, 300));
+            const mockData = generateMockResumeData(fileInfo.text);
+            fieldData = mockData[field.key];
+          }
+
+          parsedData[field.key] = fieldData;
+
+          console.log(`  ✓ 解析成功:`, JSON.stringify(fieldData).substring(0, 100));
+
+          // 发送字段解析结果（立即发送到前端）
+          res.write(`data: ${JSON.stringify({ 
+            type: 'field', 
+            field: field.key, 
+            data: fieldData, 
+            label: field.label 
+          })}\n\n`);
+
+          // 添加小延迟让前端有时间渲染
+          await new Promise(resolve => setTimeout(resolve, 100));
+
+        } catch (fieldError) {
+          console.error(`  ✗ 解析失败:`, fieldError.message);
+          parsedData[field.key] = hasValidApiKey ? null : generateMockResumeData(fileInfo.text)[field.key];
         }
+
+        currentProgress = fieldEndProgress;
+
+        // 发送字段完成进度
+        res.write(`data: ${JSON.stringify({ 
+          type: 'field_done', 
+          field: field.key, 
+          label: field.label, 
+          progress: currentProgress 
+        })}\n\n`);
       }
 
-      // 4. 保存到数据库
+      console.log('\n[阶段 2/4] 所有字段解析完成');
+      console.log('解析结果汇总:', JSON.stringify(parsedData).substring(0, 300) + '...');
+
+      // 3. 保存到数据库
+      console.log('\n[阶段 3/4] 正在保存到数据库...');
       res.write(`data: ${JSON.stringify({ type: 'saving', message: '正在保存数据...' })}\n\n`);
 
       const candidate = await prisma.candidate.create({
@@ -224,15 +329,15 @@ class ResumeService {
           email: parsedData.email || '',
           phone: parsedData.phone || '',
           city: parsedData.city || '',
-          skills: parsedData.skills || [],
+          skills: Array.isArray(parsedData.skills) ? parsedData.skills : [],
           resumeUrl: fileUrl,
           status: 'pending'
         }
       });
-      console.log('候选人数据已保存, ID:', candidate.id);
+      console.log('[阶段 3/4] 候选人数据已保存, ID:', candidate.id);
 
       // 保存工作经历
-      if (parsedData.experience?.length > 0) {
+      if (Array.isArray(parsedData.experience) && parsedData.experience.length > 0) {
         for (const exp of parsedData.experience) {
           await prisma.workExperience.create({
             data: {
@@ -244,10 +349,11 @@ class ResumeService {
             }
           });
         }
+        console.log(`[阶段 3/4] 保存了 ${parsedData.experience.length} 条工作经历`);
       }
 
       // 保存教育背景
-      if (parsedData.education?.length > 0) {
+      if (Array.isArray(parsedData.education) && parsedData.education.length > 0) {
         for (const edu of parsedData.education) {
           await prisma.education.create({
             data: {
@@ -259,12 +365,30 @@ class ResumeService {
             }
           });
         }
+        console.log(`[阶段 3/4] 保存了 ${parsedData.education.length} 条教育背景`);
       }
 
-      // 5. 发送完成信号
+      // 保存项目经验
+      if (Array.isArray(parsedData.projects) && parsedData.projects.length > 0) {
+        for (const proj of parsedData.projects) {
+          await prisma.project.create({
+            data: {
+              candidateId: candidate.id,
+              name: proj.name || '',
+              techStack: proj.techStack || [],
+              responsibility: proj.responsibility || '',
+              highlights: proj.highlights || ''
+            }
+          });
+        }
+        console.log(`[阶段 3/4] 保存了 ${parsedData.projects.length} 条项目经验`);
+      }
+
+      // 4. 发送完成信号
+      console.log('\n[阶段 4/4] 发送完成信号...');
       res.write(`data: ${JSON.stringify({ type: 'done', candidateId: candidate.id, name: candidate.name })}\n\n`);
       res.end();
-      console.log('简历解析完成');
+      console.log('========== [简历解析流程完成] ==========\n');
 
     } catch (error) {
       console.error('SSE 解析错误:', error);
@@ -314,6 +438,26 @@ class ResumeService {
     return await prisma.candidate.update({
       where: { id },
       data: { status: newStatus }
+    });
+  }
+
+  /**
+   * 模块四：删除候选人及其关联数据
+   */
+  async deleteCandidate(id) {
+    return await prisma.candidate.delete({
+      where: { id }
+    });
+  }
+
+  async getCandidateById(id) {
+    return await prisma.candidate.findUnique({
+      where: { id },
+      include: {
+        experiences: true,
+        educations: true,
+        scores: true
+      }
     });
   }
 
@@ -460,8 +604,6 @@ class ResumeService {
         });
 
         let fullContent = '';
-        res.write(`data: ${JSON.stringify({ type: 'thinking', message: 'AI正在分析候选人简历...' })}\n\n`);
-
         for await (const chunk of stream) {
           const content = chunk.choices[0]?.delta?.content || '';
           if (content) {

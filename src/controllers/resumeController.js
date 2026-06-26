@@ -1,5 +1,7 @@
 import resumeService from '../services/resumeService.js';
 import { success, error, ResponseCode } from '../utils/response.js';
+import fs from 'fs';
+import path from 'path';
 
 class ResumeController {
   /**
@@ -34,8 +36,20 @@ class ResumeController {
         return res.status(400).json(error('请上传至少一份 PDF 简历', ResponseCode.BAD_REQUEST));
       }
 
-      // 映射出文件的可访问 URL
-      const urls = req.files.map(file => `http://localhost:8000/uploads/${file.filename}`);
+      const uploadDir = path.join('D:\\work\\ai-resume-platform', 'public', 'uploads');
+      if (!fs.existsSync(uploadDir)) {
+        fs.mkdirSync(uploadDir, { recursive: true });
+      }
+
+      const urls = [];
+      for (const file of req.files) {
+        const filename = `${Date.now()}-${Math.random().toString(36).substring(2, 15)}.pdf`;
+        const filePath = path.join(uploadDir, filename);
+        
+        await fs.promises.writeFile(filePath, file.buffer, { mode: 0o666 });
+        
+        urls.push(`/uploads/${filename}`);
+      }
       
       res.status(200).json(success({ urls }, '上传成功'));
     } catch (err) {
@@ -65,28 +79,14 @@ class ResumeController {
     try {
       const { id } = req.params;
       const { status } = req.body;
-      const updated = await resumeService.updateStatus(id, status);
-      res.status(200).json(success({ currentStatus: updated.status }, '状态更新成功'));
-    } catch (err) {
-      console.error('状态更新失败:', err);
-      res.status(400).json(error(err.message || '状态更新失败', ResponseCode.BAD_REQUEST));
-    }
-  }
-
-  /**
-   * 模块三：岗位匹配评分
-   */
-  async matchJob(req, res) {
-    try {
-      const { candidateId, jd } = req.body;
-      if (!candidateId || !jd) {
+      if (!id || !status) {
         return res.status(400).json(error('参数缺失', ResponseCode.BAD_REQUEST));
       }
-      const scoreResult = await resumeService.matchJobDescription(candidateId, jd);
-      res.status(200).json(success(scoreResult, '匹配完成'));
+      await resumeService.updateStatus(id, status);
+      res.status(200).json(success({ success: true }, '状态更新成功'));
     } catch (err) {
-      console.error('岗位匹配失败:', err);
-      res.status(500).json(error(err.message || '匹配失败', ResponseCode.SERVER_ERROR));
+      console.error('状态更新失败:', err);
+      res.status(500).json(error(err.message || '更新失败', ResponseCode.SERVER_ERROR));
     }
   }
 
@@ -107,6 +107,51 @@ class ResumeController {
 
       // 调用服务层进行流式匹配
       await resumeService.matchJobStream(candidateId, jd, res);
+    } catch (err) {
+      console.error('岗位匹配失败:', err);
+      res.status(500).json(error(err.message || '匹配失败', ResponseCode.SERVER_ERROR));
+    }
+  }
+
+  /**
+   * 模块四：删除候选人
+   */
+  async deleteCandidate(req, res) {
+    try {
+      const { id } = req.params;
+      await resumeService.deleteCandidate(id);
+      res.status(200).json(success({ success: true }, '删除成功'));
+    } catch (err) {
+      console.error('删除候选人失败:', err);
+      res.status(500).json(error(err.message || '删除失败', ResponseCode.SERVER_ERROR));
+    }
+  }
+
+  async getCandidateById(req, res) {
+    try {
+      const { id } = req.params;
+      const data = await resumeService.getCandidateById(id);
+      if (!data) {
+        return res.status(404).json(error('候选人不存在', ResponseCode.NOT_FOUND));
+      }
+      res.status(200).json(success(data, '查询成功'));
+    } catch (err) {
+      console.error('查询候选人失败:', err);
+      res.status(500).json(error('查询失败', ResponseCode.SERVER_ERROR));
+    }
+  }
+
+  /**
+   * 模块三：非流式岗位匹配
+   */
+  async matchJob(req, res) {
+    try {
+      const { candidateId, jd } = req.body;
+      if (!candidateId || !jd) {
+        return res.status(400).json(error('参数缺失', ResponseCode.BAD_REQUEST));
+      }
+      const result = await resumeService.matchJobDescription(candidateId, jd);
+      res.status(200).json(success(result, '匹配完成'));
     } catch (err) {
       console.error('岗位匹配失败:', err);
       res.status(500).json(error(err.message || '匹配失败', ResponseCode.SERVER_ERROR));
