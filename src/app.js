@@ -6,7 +6,7 @@ const app = express();
 
 // 基础中间件配置
 app.use(cors({
-  origin: 'http://localhost:3000', // 允许前端Next.js跨域联调
+  origin: ['http://localhost:3000', 'http://12ppbi6305469.vicp.fun'],
   credentials: true
 }));
 app.use(express.json());
